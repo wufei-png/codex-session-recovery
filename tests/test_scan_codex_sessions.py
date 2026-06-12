@@ -184,6 +184,26 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertIn("error:", invalid_timezone.stderr)
         self.assertNotIn("Traceback", invalid_timezone.stderr)
 
+    def test_non_positive_limit_returns_cli_error_without_traceback(self):
+        for invalid_limit in ("0", "-1"):
+            with self.subTest(limit=invalid_limit):
+                completed = self.run_cli(
+                    "--codex-home", str(self.codex_home), "--limit", invalid_limit
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn("error:", completed.stderr)
+                self.assertIn("limit must be positive", completed.stderr)
+                self.assertNotIn("Traceback", completed.stderr)
+
+    def test_scan_rejects_non_positive_limit(self):
+        for invalid_limit in (0, -1):
+            with self.subTest(limit=invalid_limit):
+                with self.assertRaisesRegex(
+                    self.scanner.ScannerInputError, "limit must be positive"
+                ):
+                    self.scan(limit=invalid_limit)
+
     def test_index_only_stale_record_gets_weaker_evidence_warning(self):
         session_index = self.codex_home / "session_index.jsonl"
         with session_index.open("a", encoding="utf-8") as handle:

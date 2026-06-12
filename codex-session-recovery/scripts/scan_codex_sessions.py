@@ -115,6 +115,23 @@ def parse_boundary(value: str | None, tz: tzinfo, end_of_day: bool = False) -> d
     return parsed
 
 
+def positive_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ScannerInputError("limit must be positive") from exc
+    if limit <= 0:
+        raise ScannerInputError("limit must be positive")
+    return limit
+
+
+def positive_limit_arg(value: str) -> int:
+    try:
+        return positive_limit(value)
+    except ScannerInputError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def earlier(left: datetime | None, right: datetime | None) -> datetime | None:
     if left is None:
         return right
@@ -553,7 +570,7 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
     resolved_timezone_label = timezone_label(timezone_option, resolved_timezone)
     since = parse_boundary(options.get("since"), resolved_timezone)
     until = parse_boundary(options.get("until"), resolved_timezone, end_of_day=True)
-    limit = int(options.get("limit") or 20)
+    limit = positive_limit(options.get("limit", 20))
     show_prompts = bool(options.get("show_prompts", False))
     filters = build_filters(
         options, resolved_timezone_label, include_archived, include_subagents, limit
@@ -673,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query")
     parser.add_argument("--include-archived", action="store_true")
     parser.add_argument("--include-subagents", action="store_true")
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=positive_limit_arg, default=20)
     parser.add_argument("--format", choices=["table", "json"], default="table")
     parser.add_argument("--show-prompts", action="store_true")
     return parser
