@@ -250,4 +250,4 @@ The scanner should produce actionable errors:
 - The scanner emits ranked candidates and recovery commands for representative fixture sessions.
 - Default output excludes archived and subagent sessions.
 - Desktop action instructions are capability-gated by current-session `tool_search` results and explicit user intent.
-- The design avoids claims that Desktop context guarantees thread tools.
+- The design avoids claiming that a Desktop context by itself provides thread tools.
