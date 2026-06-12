@@ -178,7 +178,10 @@ def timestamp_from_filename(path: Path, tz: tzinfo) -> datetime | None:
         parsed_date = datetime.strptime(date_part, "%Y-%m-%d").date()
     except ValueError:
         return None
-    parsed_time = time(int(hour), int(minute), int(second))
+    try:
+        parsed_time = time(int(hour), int(minute), int(second))
+    except ValueError:
+        return None
     return datetime.combine(parsed_date, parsed_time, tzinfo=tz)
 
 
@@ -219,7 +222,11 @@ def is_subagent_source(source: Any) -> bool:
 
 
 def record_from_index_line(
-    obj: dict[str, Any], path: Path, line_number: int, warnings: list[str]
+    obj: dict[str, Any],
+    path: Path,
+    line_number: int,
+    warnings: list[str],
+    fallback_timezone: tzinfo,
 ) -> MutableRecord | None:
     thread_id = obj.get("id") or obj.get("thread_id") or obj.get("session_id")
     if not isinstance(thread_id, str):
@@ -234,8 +241,22 @@ def record_from_index_line(
     cwd = obj.get("cwd")
     if isinstance(cwd, str):
         record.cwd = cwd
-    record.started_at = parse_timestamp(obj.get("created_at") or obj.get("started_at"))
-    record.updated_at = parse_timestamp(obj.get("updated_at") or obj.get("timestamp"))
+    record.started_at = normalize_event_timestamp(
+        record,
+        warnings,
+        path,
+        line_number,
+        parse_timestamp(obj.get("created_at") or obj.get("started_at")),
+        fallback_timezone,
+    )
+    record.updated_at = normalize_event_timestamp(
+        record,
+        warnings,
+        path,
+        line_number,
+        parse_timestamp(obj.get("updated_at") or obj.get("timestamp")),
+        fallback_timezone,
+    )
     record.subagent = is_subagent_source(obj.get("source"))
     summary = obj.get("summary") or obj.get("title")
     if isinstance(summary, str):
@@ -306,7 +327,7 @@ def parse_jsonl(
             continue
 
         if path.name == "session_index.jsonl":
-            indexed = record_from_index_line(obj, path, line_number, warnings)
+            indexed = record_from_index_line(obj, path, line_number, warnings, fallback_timezone)
             if indexed is not None and (include_archived or not indexed.archived):
                 records.append(indexed)
             continue

@@ -200,6 +200,51 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertLess(stale["confidence"], active["confidence"])
         self.assertIn("index-only evidence", "\n".join(stale["matching_reasons"] + stale["warnings"]))
 
+    def test_index_only_naive_timestamp_does_not_crash_sorting(self):
+        session_index = self.codex_home / "session_index.jsonl"
+        session_index.write_text(
+            "\n".join(
+                [
+                    (
+                        '{"id":"index-aware","cwd":"/Users/example/project",'
+                        '"updated_at":"2026-06-12T16:00:00+08:00",'
+                        '"path":"sessions/missing/rollout-2026-06-12T16-00-00-index-aware.jsonl"}'
+                    ),
+                    (
+                        '{"id":"index-naive","cwd":"/Users/example/project",'
+                        '"updated_at":"2026-06-12T17:00:00",'
+                        '"path":"sessions/missing/rollout-2026-06-12T17-00-00-index-naive.jsonl"}'
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        shutil.rmtree(self.codex_home / "sessions")
+
+        result = self.scan()
+
+        self.assertEqual(["index-naive", "index-aware"], self.ids(result))
+        self.assertIn("naive timestamp", "\n".join(result["warnings"]))
+
+    def test_malformed_filename_timestamp_does_not_crash_scan(self):
+        path = (
+            self.codex_home
+            / "sessions"
+            / "2026"
+            / "06"
+            / "12"
+            / "rollout-2026-06-12T99-99-99-bad-clock.jsonl"
+        )
+        path.write_text(
+            '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"bad clock fallback"}]}}\n',
+            encoding="utf-8",
+        )
+
+        result = self.scan(cwd=None, query="bad clock fallback")
+
+        self.assertEqual(["bad-clock"], self.ids(result))
+        self.assertIsNone(result["records"][0]["updated_at"])
+
     def test_filename_only_fallback_parses_id_and_timestamp(self):
         path = (
             self.codex_home
