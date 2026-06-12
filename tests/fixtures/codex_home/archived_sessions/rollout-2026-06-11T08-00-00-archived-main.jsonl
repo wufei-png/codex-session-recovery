@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-11T08:00:00+08:00","type":"session_meta","payload":{"id":"archived-main","cwd":"/Users/example/project","source":"cli"}}
+{"timestamp":"2026-06-11T08:06:00+08:00","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old archived restore session"}]}}
