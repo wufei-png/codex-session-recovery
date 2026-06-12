@@ -29,6 +29,8 @@ class MutableRecord:
     active_sources: int = 0
     subagent: bool = False
     source_paths: set[str] = field(default_factory=set)
+    referenced_paths: set[str] = field(default_factory=set)
+    evidence_types: set[str] = field(default_factory=set)
     user_prompts: list[str] = field(default_factory=list)
     summaries: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -39,8 +41,9 @@ class MutableRecord:
     def archived(self) -> bool:
         return self.archived_sources > 0 and self.active_sources == 0
 
-    def merge_source(self, source_path: Path, archived: bool) -> None:
+    def merge_source(self, source_path: Path, archived: bool, evidence_type: str) -> None:
         self.source_paths.add(str(source_path))
+        self.evidence_types.add(evidence_type)
         if archived:
             self.archived_sources += 1
         else:
@@ -55,9 +58,15 @@ class MutableRecord:
         self.active_sources += other.active_sources
         self.subagent = self.subagent or other.subagent
         self.source_paths.update(other.source_paths)
+        self.referenced_paths.update(other.referenced_paths)
+        self.evidence_types.update(other.evidence_types)
         self.user_prompts.extend(other.user_prompts)
         self.summaries.extend(other.summaries)
         self.warnings.extend(other.warnings)
+
+
+class ScannerInputError(ValueError):
+    pass
 
 
 def default_codex_home() -> Path:
@@ -70,7 +79,10 @@ def local_timezone() -> tzinfo:
 
 def timezone_from_option(value: str | None) -> tzinfo:
     if value:
-        return ZoneInfo(value)
+        try:
+            return ZoneInfo(value)
+        except Exception as exc:
+            raise ScannerInputError(f"invalid timezone {value!r}") from exc
     return local_timezone()
 
 
@@ -94,7 +106,10 @@ def parse_boundary(value: str | None, tz: tzinfo, end_of_day: bool = False) -> d
         parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
         parsed_time = time.max if end_of_day else time.min
         return datetime.combine(parsed_date, parsed_time, tzinfo=tz)
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ScannerInputError(f"invalid date or datetime {value!r}") from exc
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=tz)
     return parsed
@@ -134,14 +149,49 @@ def candidate_paths(codex_home: Path, include_archived: bool) -> list[Path]:
     return paths
 
 
+def searched_paths(codex_home: Path, include_archived: bool) -> list[str]:
+    paths = [
+        str(codex_home / "session_index.jsonl"),
+        str(codex_home / "sessions" / "**" / "*.jsonl"),
+    ]
+    if include_archived:
+        paths.append(str(codex_home / "archived_sessions" / "*.jsonl"))
+    return paths
+
+
 def id_from_filename(path: Path) -> str | None:
     uuid_match = UUID_RE.search(path.name)
     if uuid_match:
         return uuid_match.group(0)
-    match = re.search(r"rollout-\d{4}-\d{2}-\d{2}T[^-]+-(.+)\.jsonl$", path.name)
+    match = re.search(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$", path.name)
     if match:
         return match.group(1)
     return None
+
+
+def timestamp_from_filename(path: Path, tz: tzinfo) -> datetime | None:
+    match = re.search(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-", path.name)
+    if not match:
+        return None
+    date_part, hour, minute, second = match.groups()
+    try:
+        parsed_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    parsed_time = time(int(hour), int(minute), int(second))
+    return datetime.combine(parsed_date, parsed_time, tzinfo=tz)
+
+
+def apply_filename_timestamp(record: MutableRecord, path: Path, fallback_timezone: tzinfo) -> None:
+    if record.started_at is not None or record.updated_at is not None:
+        return
+    filename_timestamp = timestamp_from_filename(path, fallback_timezone)
+    if filename_timestamp is None:
+        return
+    record.started_at = filename_timestamp
+    record.updated_at = filename_timestamp
+    record.evidence_types.add("filename_timestamp")
+    record.matching_reasons.append("filename fallback timestamp")
 
 
 def extract_content_text(content: Any) -> str | None:
@@ -178,7 +228,9 @@ def record_from_index_line(
     path_hint = obj.get("path")
     archived = isinstance(path_hint, str) and path_hint.startswith("archived_sessions/")
     record = MutableRecord(thread_id=thread_id)
-    record.merge_source(path, archived)
+    record.merge_source(path, archived, "index")
+    if isinstance(path_hint, str):
+        record.referenced_paths.add(path_hint)
     cwd = obj.get("cwd")
     if isinstance(cwd, str):
         record.cwd = cwd
@@ -198,7 +250,37 @@ def payload_for(obj: dict[str, Any]) -> dict[str, Any]:
     return obj
 
 
-def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord], list[str]]:
+def note_naive_timestamp(
+    record: MutableRecord | None, warnings: list[str], path: Path, line_number: int, stamp: datetime | None
+) -> datetime | None:
+    if stamp is None:
+        return None
+    if stamp.tzinfo is not None:
+        return stamp
+    warning = f"{path}:{line_number}: naive timestamp interpreted using filter timezone"
+    warnings.append(warning)
+    if record is not None:
+        record.warnings.append(warning)
+    return stamp
+
+
+def normalize_event_timestamp(
+    record: MutableRecord | None,
+    warnings: list[str],
+    path: Path,
+    line_number: int,
+    stamp: datetime | None,
+    fallback_timezone: tzinfo,
+) -> datetime | None:
+    noted = note_naive_timestamp(record, warnings, path, line_number, stamp)
+    if noted is not None and noted.tzinfo is None:
+        return noted.replace(tzinfo=fallback_timezone)
+    return noted
+
+
+def parse_jsonl(
+    path: Path, include_archived: bool, fallback_timezone: tzinfo
+) -> tuple[list[MutableRecord], list[str]]:
     archived = is_archived_path(path)
     if archived and not include_archived:
         return [], []
@@ -231,6 +313,9 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
 
         payload = payload_for(obj)
         event_time = parse_timestamp(obj.get("timestamp") or payload.get("timestamp"))
+        event_time = normalize_event_timestamp(
+            current, warnings, path, line_number, event_time, fallback_timezone
+        )
 
         if obj.get("type") == "session_meta" or "cwd" in payload or "id" in payload:
             thread_id = payload.get("id") or payload.get("thread_id") or id_from_filename(path)
@@ -239,7 +324,11 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
                 continue
             if current is None:
                 current = MutableRecord(thread_id=thread_id)
-                current.merge_source(path, archived)
+                current.merge_source(path, archived, "transcript")
+                if event_time is None:
+                    apply_filename_timestamp(current, path, fallback_timezone)
+            if payload.get("id") is None and payload.get("thread_id") is None:
+                current.evidence_types.add("filename_identity")
             current.thread_id = thread_id
             cwd = payload.get("cwd")
             if isinstance(cwd, str):
@@ -255,8 +344,10 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
                 warnings.append(f"{path}:{line_number}: missing thread id; skipped record")
                 continue
             current = MutableRecord(thread_id=fallback_id)
-            current.merge_source(path, archived)
-
+            current.merge_source(path, archived, "transcript")
+            current.evidence_types.add("filename_identity")
+            if event_time is None:
+                apply_filename_timestamp(current, path, fallback_timezone)
         current.started_at = earlier(current.started_at, event_time)
         current.updated_at = later(current.updated_at, event_time)
 
@@ -277,7 +368,9 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
         fallback_id = id_from_filename(path)
         if fallback_id is not None:
             record = MutableRecord(thread_id=fallback_id)
-            record.merge_source(path, archived)
+            record.merge_source(path, archived, "transcript")
+            record.evidence_types.add("filename_identity")
+            apply_filename_timestamp(record, path, fallback_timezone)
             record.warnings.extend(warnings)
             records.append(record)
     return records, warnings
@@ -329,10 +422,22 @@ def matches_query(record: MutableRecord, query: str | None) -> bool:
     return query.casefold() in searchable_blob(record).casefold()
 
 
-def matches_dates(record: MutableRecord, since: datetime | None, until: datetime | None) -> bool:
+def normalize_stamp(record: MutableRecord, stamp: datetime, fallback_timezone: tzinfo) -> datetime:
+    if stamp.tzinfo is not None:
+        return stamp
+    warning = "naive timestamp interpreted using filter timezone"
+    if warning not in record.warnings:
+        record.warnings.append(warning)
+    return stamp.replace(tzinfo=fallback_timezone)
+
+
+def matches_dates(
+    record: MutableRecord, since: datetime | None, until: datetime | None, fallback_timezone: tzinfo
+) -> bool:
     stamp = record.updated_at or record.started_at
     if stamp is None:
         return True
+    stamp = normalize_stamp(record, stamp, fallback_timezone)
     if since is not None and stamp < since:
         return False
     if until is not None and stamp > until:
@@ -342,14 +447,19 @@ def matches_dates(record: MutableRecord, since: datetime | None, until: datetime
 
 def score_record(record: MutableRecord, cwd: str | None, query: str | None) -> None:
     score = 0
-    reasons: list[str] = []
+    reasons: list[str] = list(record.matching_reasons)
+    has_primary_evidence = "transcript" in record.evidence_types
+    if not has_primary_evidence:
+        reasons.append("index-only evidence")
+        if not any("index-only evidence" in warning for warning in record.warnings):
+            record.warnings.append("index-only evidence; referenced transcript absent")
     if cwd is not None and matches_cwd(record, cwd):
-        score += 60
+        score += 60 if has_primary_evidence else 20
         reasons.append("cwd exact match")
-    if not record.archived:
+    if not record.archived and has_primary_evidence:
         score += 10
         reasons.append("active source")
-    if not record.subagent:
+    if not record.subagent and has_primary_evidence:
         score += 10
         reasons.append("main session")
     if query is not None and matches_query(record, query):
@@ -391,6 +501,26 @@ def serialize_record(record: MutableRecord, show_prompts: bool) -> dict[str, Any
     }
 
 
+def build_filters(
+    options: dict[str, Any],
+    resolved_timezone_label: str,
+    include_archived: bool,
+    include_subagents: bool,
+    limit: int,
+) -> dict[str, Any]:
+    return {
+        "codex_home": str(Path(options["codex_home"]).expanduser()),
+        "cwd": options.get("cwd"),
+        "since": options.get("since"),
+        "until": options.get("until"),
+        "timezone": resolved_timezone_label,
+        "query": options.get("query"),
+        "include_archived": include_archived,
+        "include_subagents": include_subagents,
+        "limit": limit,
+    }
+
+
 def scan(options: dict[str, Any]) -> dict[str, Any]:
     codex_home = Path(options["codex_home"]).expanduser()
     include_archived = bool(options.get("include_archived", False))
@@ -404,6 +534,9 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
     until = parse_boundary(options.get("until"), resolved_timezone, end_of_day=True)
     limit = int(options.get("limit") or 20)
     show_prompts = bool(options.get("show_prompts", False))
+    filters = build_filters(
+        options, resolved_timezone_label, include_archived, include_subagents, limit
+    )
 
     warnings: list[str] = []
     if not codex_home.exists():
@@ -411,12 +544,13 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
             "codex_home": str(codex_home),
             "records": [],
             "warnings": [f"{codex_home} does not exist"],
-            "filters": options,
+            "filters": filters,
+            "searched_paths": searched_paths(codex_home, include_archived),
         }
 
     parsed_records: list[MutableRecord] = []
     for path in candidate_paths(codex_home, include_archived):
-        records, path_warnings = parse_jsonl(path, include_archived)
+        records, path_warnings = parse_jsonl(path, include_archived, resolved_timezone)
         parsed_records.extend(records)
         warnings.extend(path_warnings)
 
@@ -431,7 +565,7 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
             continue
         if not matches_query(record, query):
             continue
-        if not matches_dates(record, since, until):
+        if not matches_dates(record, since, until, resolved_timezone):
             continue
         score_record(record, cwd, query)
         filtered.append(record)
@@ -450,16 +584,8 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
         "codex_home": str(codex_home),
         "records": [serialize_record(record, show_prompts) for record in selected],
         "warnings": warnings,
-        "filters": {
-            "cwd": cwd,
-            "since": options.get("since"),
-            "until": options.get("until"),
-            "timezone": resolved_timezone_label,
-            "query": query,
-            "include_archived": include_archived,
-            "include_subagents": include_subagents,
-            "limit": limit,
-        },
+        "filters": filters,
+        "searched_paths": searched_paths(codex_home, include_archived),
     }
 
 
@@ -508,11 +634,15 @@ def format_table(result: dict[str, Any]) -> str:
         lines.extend(f"- {warning}" for warning in result["warnings"])
     if not result["records"]:
         lines.append("")
+        lines.append("searched paths:")
+        lines.extend(f"- {path}" for path in result.get("searched_paths", []))
+        lines.append("")
         lines.append("No matching sessions found. Relax cwd, date, archive, subagent, or query filters.")
+        lines.append("Manual check: codex resume --all")
     return "\n".join(lines)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Find local Codex sessions safely.")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
     parser.add_argument("--cwd")
@@ -525,12 +655,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--format", choices=["table", "json"], default="table")
     parser.add_argument("--show-prompts", action="store_true")
+    return parser
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = build_parser()
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    result = scan(vars(args))
+    parser_argv = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    try:
+        args = parser.parse_args(parser_argv)
+        result = scan(vars(args))
+    except ScannerInputError as exc:
+        parser.error(str(exc))
+        return 2
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -52,6 +54,14 @@ class ScanCodexSessionsTest(unittest.TestCase):
 
     def ids(self, result):
         return [record["thread_id"] for record in result["records"]]
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SCANNER_PATH), *args],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
 
     def test_default_scan_excludes_archived_and_subagent_sessions(self):
         result = self.scan()
@@ -120,9 +130,96 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertNotIn("before-local-midnight", self.ids(result))
         self.assertEqual(str(self.scanner.local_timezone()), result["filters"]["timezone"])
 
+    def test_naive_transcript_timestamps_do_not_crash_date_filtering(self):
+        path = (
+            self.codex_home
+            / "sessions"
+            / "2026"
+            / "06"
+            / "12"
+            / "rollout-2026-06-12T13-00-00-naive-main.jsonl"
+        )
+        path.write_text(
+            "\n".join(
+                [
+                    '{"timestamp":"2026-06-12T13:00:00","type":"session_meta","payload":{"id":"naive-main","cwd":"/Users/example/project","source":"cli"}}',
+                    '{"timestamp":"2026-06-12T13:02:00","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"naive timestamp session"}]}}',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.scan(since="2026-06-12T00:00:00+08:00", until="2026-06-13T00:00:00+08:00")
+
+        self.assertIn("naive-main", self.ids(result))
+        warnings = "\n".join(result["warnings"])
+        self.assertIn("naive timestamp", warnings)
+
     def test_query_filter_matches_user_prompt_text(self):
         result = self.scan(query="keepsake")
         self.assertEqual(["active-main"], self.ids(result))
+
+    def test_missing_codex_home_json_output_is_serializable_and_actionable(self):
+        missing_home = self.codex_home.parent / "missing-codex-home"
+        completed = self.run_cli("--codex-home", str(missing_home), "--format", "json")
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(str(missing_home), payload["codex_home"])
+        self.assertEqual(str(missing_home), payload["filters"]["codex_home"])
+        self.assertIn("does not exist", "\n".join(payload["warnings"]))
+
+    def test_invalid_since_and_timezone_return_cli_errors_without_traceback(self):
+        invalid_since = self.run_cli(
+            "--codex-home", str(self.codex_home), "--since", "not-a-date"
+        )
+        invalid_timezone = self.run_cli(
+            "--codex-home", str(self.codex_home), "--timezone", "Not/AZone"
+        )
+
+        self.assertNotEqual(0, invalid_since.returncode)
+        self.assertIn("error:", invalid_since.stderr)
+        self.assertNotIn("Traceback", invalid_since.stderr)
+        self.assertNotEqual(0, invalid_timezone.returncode)
+        self.assertIn("error:", invalid_timezone.stderr)
+        self.assertNotIn("Traceback", invalid_timezone.stderr)
+
+    def test_index_only_stale_record_gets_weaker_evidence_warning(self):
+        session_index = self.codex_home / "session_index.jsonl"
+        with session_index.open("a", encoding="utf-8") as handle:
+            handle.write(
+                '\n{"id":"stale-index-only","cwd":"/Users/example/project",'
+                '"updated_at":"2026-06-12T14:00:00+08:00",'
+                '"path":"sessions/missing/rollout-2026-06-12T14-00-00-stale-index-only.jsonl"}\n'
+            )
+
+        result = self.scan()
+        stale = next(record for record in result["records"] if record["thread_id"] == "stale-index-only")
+        active = next(record for record in result["records"] if record["thread_id"] == "active-main")
+
+        self.assertLess(stale["confidence"], active["confidence"])
+        self.assertIn("index-only evidence", "\n".join(stale["matching_reasons"] + stale["warnings"]))
+
+    def test_filename_only_fallback_parses_id_and_timestamp(self):
+        path = (
+            self.codex_home
+            / "sessions"
+            / "2026"
+            / "06"
+            / "12"
+            / "rollout-2026-06-12T15-30-45-filename-only-main.jsonl"
+        )
+        path.write_text(
+            '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"filename fallback session"}]}}\n',
+            encoding="utf-8",
+        )
+
+        result = self.scan(cwd=None, query="filename fallback")
+        record = result["records"][0]
+
+        self.assertEqual("filename-only-main", record["thread_id"])
+        self.assertEqual("2026-06-12T15:30:45+08:00", record["updated_at"])
+        self.assertIn("filename fallback timestamp", "\n".join(record["matching_reasons"] + record["warnings"]))
 
     def test_json_output_contains_recovery_commands(self):
         result = self.scan()
@@ -173,6 +270,16 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertIn("session_index.jsonl", warnings)
         self.assertIn("nameless.jsonl", warnings)
         self.assertIn("active-main", self.ids(result))
+
+    def test_empty_state_table_mentions_searched_paths_and_resume_all(self):
+        empty_home = Path(self.tmp.name) / "empty_codex_home"
+        empty_home.mkdir()
+        result = self.scan(codex_home=empty_home, cwd="/no/matches")
+        table = self.scanner.format_table(result)
+
+        self.assertIn("searched paths:", table)
+        self.assertIn("sessions/**/*.jsonl", table)
+        self.assertIn("codex resume --all", table)
 
     def test_fixture_copy_is_not_real_codex_home(self):
         self.assertNotEqual(Path.home() / ".codex", self.codex_home)
