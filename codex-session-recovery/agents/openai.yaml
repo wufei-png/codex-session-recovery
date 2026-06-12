@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Session Recovery"
+  short_description: "Find local Codex sessions and make safe recovery instructions."
+  default_prompt: "Find prior Codex sessions from local history and provide CLI-first recovery steps."
