@@ -44,34 +44,7 @@ Never do this as part of this skill:
 
 ## Scanner
 
-Use the bundled scanner for deterministic discovery:
-
-```bash
-python "${CODEX_HOME:-$HOME/.codex}/skills/codex-session-recovery/scripts/scan_codex_sessions.py" \
-  --codex-home "${CODEX_HOME:-$HOME/.codex}" \
-  --cwd "/Users/example/project" \
-  --since "2026-06-10" \
-  --timezone "Asia/Shanghai" \
-  --format table
-```
-
-When using the skill from a development checkout, run:
-
-```bash
-python codex-session-recovery/scripts/scan_codex_sessions.py --codex-home /tmp/copied-codex-home --format json
-```
-
-Useful options:
-
-- `--cwd PATH`: filter by session working directory.
-- `--since DATE_OR_DATETIME`: include sessions at or after this time.
-- `--until DATE_OR_DATETIME`: include sessions at or before this time.
-- `--timezone NAME`: interpret date-only filters in this timezone.
-- `--query TEXT`: match user prompts, paths, and summaries.
-- `--include-archived`: include archived sessions.
-- `--include-subagents`: include subagent sessions.
-- `--show-prompts`: show short prompt snippets.
-- `--format table|json`: choose human or automation output.
+The scanner script is added by the implementation tasks for this skill. Until `scripts/scan_codex_sessions.py` exists, use this skill's safety rules and Desktop capability gate as the source of truth. Once the scanner exists, use it for deterministic discovery instead of ad hoc JSONL parsing.
 
 ## Desktop Visibility Flow
 
