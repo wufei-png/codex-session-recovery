@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -83,6 +84,42 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertIn("active-main", self.ids(result))
         self.assertNotIn("archived-main", self.ids(result))
 
+    def test_date_filter_defaults_to_local_timezone(self):
+        local_midnight = datetime(2026, 6, 12, tzinfo=self.scanner.local_timezone())
+        before_local_midnight = local_midnight - timedelta(minutes=30)
+        path = (
+            self.codex_home
+            / "sessions"
+            / "2026"
+            / "06"
+            / "11"
+            / "rollout-2026-06-11T23-30-00-before-local-midnight.jsonl"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    (
+                        '{"timestamp":"%s","type":"session_meta",'
+                        '"payload":{"id":"before-local-midnight","cwd":"%s","source":"cli"}}'
+                    )
+                    % (before_local_midnight.isoformat(), PROJECT_CWD),
+                    (
+                        '{"timestamp":"%s","type":"response_item",'
+                        '"payload":{"type":"message","role":"user",'
+                        '"content":[{"type":"input_text","text":"timezone boundary session"}]}}'
+                    )
+                    % (before_local_midnight.isoformat(),),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.scan(since="2026-06-12", timezone=None)
+
+        self.assertNotIn("before-local-midnight", self.ids(result))
+        self.assertEqual(str(self.scanner.local_timezone()), result["filters"]["timezone"])
+
     def test_query_filter_matches_user_prompt_text(self):
         result = self.scan(query="keepsake")
         self.assertEqual(["active-main"], self.ids(result))
@@ -100,6 +137,42 @@ class ScanCodexSessionsTest(unittest.TestCase):
         self.assertIn("active-main", table)
         self.assertIn("confidence", table.lower())
         self.assertIn("codex resume active-main", table)
+
+    def test_table_output_includes_recovery_details_and_prompt_snippets(self):
+        result = self.scan(query="keepsake", show_prompts=True)
+        table = self.scanner.format_table(result)
+
+        self.assertIn("matching reasons:", table)
+        self.assertIn("source paths:", table)
+        self.assertIn("codex fork active-main", table)
+        self.assertIn("codex://threads/active-main", table)
+        self.assertIn("first prompt: restore keepsake quest main session", table)
+        self.assertIn("last prompt: restore keepsake quest main session", table)
+
+    def test_missing_identity_fields_are_reported_without_failing_scan(self):
+        session_index = self.codex_home / "session_index.jsonl"
+        with session_index.open("a", encoding="utf-8") as handle:
+            handle.write('\n{"cwd":"/Users/example/project","updated_at":"2026-06-12T12:00:00+08:00"}\n')
+
+        nameless_path = self.codex_home / "sessions" / "bad" / "nameless.jsonl"
+        nameless_path.parent.mkdir(parents=True, exist_ok=True)
+        nameless_path.write_text(
+            "\n".join(
+                [
+                    '{"timestamp":"2026-06-12T12:00:00+08:00","type":"session_meta","payload":{"cwd":"/Users/example/project"}}',
+                    '{"timestamp":"2026-06-12T12:01:00+08:00","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"nameless event"}]}}',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.scan()
+        warnings = "\n".join(result["warnings"])
+
+        self.assertIn("missing thread id", warnings)
+        self.assertIn("session_index.jsonl", warnings)
+        self.assertIn("nameless.jsonl", warnings)
+        self.assertIn("active-main", self.ids(result))
 
     def test_fixture_copy_is_not_real_codex_home(self):
         self.assertNotEqual(Path.home() / ".codex", self.codex_home)

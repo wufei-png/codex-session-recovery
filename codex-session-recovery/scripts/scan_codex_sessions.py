@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, tzinfo
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -64,6 +64,20 @@ def default_codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
 
 
+def local_timezone() -> tzinfo:
+    return datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+
+
+def timezone_from_option(value: str | None) -> tzinfo:
+    if value:
+        return ZoneInfo(value)
+    return local_timezone()
+
+
+def timezone_label(value: str | None, resolved: tzinfo) -> str:
+    return value or str(resolved)
+
+
 def parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -73,10 +87,9 @@ def parse_timestamp(value: Any) -> datetime | None:
         return None
 
 
-def parse_boundary(value: str | None, tz_name: str, end_of_day: bool = False) -> datetime | None:
+def parse_boundary(value: str | None, tz: tzinfo, end_of_day: bool = False) -> datetime | None:
     if value is None:
         return None
-    tz = ZoneInfo(tz_name)
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
         parsed_time = time.max if end_of_day else time.min
@@ -155,9 +168,12 @@ def is_subagent_source(source: Any) -> bool:
     return False
 
 
-def record_from_index_line(obj: dict[str, Any], path: Path) -> MutableRecord | None:
+def record_from_index_line(
+    obj: dict[str, Any], path: Path, line_number: int, warnings: list[str]
+) -> MutableRecord | None:
     thread_id = obj.get("id") or obj.get("thread_id") or obj.get("session_id")
     if not isinstance(thread_id, str):
+        warnings.append(f"{path}:{line_number}: missing thread id; skipped record")
         return None
     path_hint = obj.get("path")
     archived = isinstance(path_hint, str) and path_hint.startswith("archived_sessions/")
@@ -208,7 +224,7 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
             continue
 
         if path.name == "session_index.jsonl":
-            indexed = record_from_index_line(obj, path)
+            indexed = record_from_index_line(obj, path, line_number, warnings)
             if indexed is not None and (include_archived or not indexed.archived):
                 records.append(indexed)
             continue
@@ -219,6 +235,7 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
         if obj.get("type") == "session_meta" or "cwd" in payload or "id" in payload:
             thread_id = payload.get("id") or payload.get("thread_id") or id_from_filename(path)
             if not isinstance(thread_id, str):
+                warnings.append(f"{path}:{line_number}: missing thread id; skipped record")
                 continue
             if current is None:
                 current = MutableRecord(thread_id=thread_id)
@@ -235,6 +252,7 @@ def parse_jsonl(path: Path, include_archived: bool) -> tuple[list[MutableRecord]
         if current is None:
             fallback_id = id_from_filename(path)
             if fallback_id is None:
+                warnings.append(f"{path}:{line_number}: missing thread id; skipped record")
                 continue
             current = MutableRecord(thread_id=fallback_id)
             current.merge_source(path, archived)
@@ -379,9 +397,11 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
     include_subagents = bool(options.get("include_subagents", False))
     cwd = options.get("cwd")
     query = options.get("query")
-    tz_name = options.get("timezone") or "UTC"
-    since = parse_boundary(options.get("since"), tz_name)
-    until = parse_boundary(options.get("until"), tz_name, end_of_day=True)
+    timezone_option = options.get("timezone")
+    resolved_timezone = timezone_from_option(timezone_option)
+    resolved_timezone_label = timezone_label(timezone_option, resolved_timezone)
+    since = parse_boundary(options.get("since"), resolved_timezone)
+    until = parse_boundary(options.get("until"), resolved_timezone, end_of_day=True)
     limit = int(options.get("limit") or 20)
     show_prompts = bool(options.get("show_prompts", False))
 
@@ -416,7 +436,7 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
         score_record(record, cwd, query)
         filtered.append(record)
 
-    floor = datetime.min.replace(tzinfo=ZoneInfo(tz_name))
+    floor = datetime.min.replace(tzinfo=resolved_timezone)
     filtered.sort(
         key=lambda item: (
             item.score,
@@ -434,7 +454,7 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
             "cwd": cwd,
             "since": options.get("since"),
             "until": options.get("until"),
-            "timezone": tz_name,
+            "timezone": resolved_timezone_label,
             "query": query,
             "include_archived": include_archived,
             "include_subagents": include_subagents,
@@ -444,12 +464,8 @@ def scan(options: dict[str, Any]) -> dict[str, Any]:
 
 
 def format_table(result: dict[str, Any]) -> str:
-    lines = [
-        f"codex_home: {result['codex_home']}",
-        "thread_id | confidence | flags | updated_at | resume",
-        "--- | ---: | --- | --- | ---",
-    ]
-    for record in result["records"]:
+    lines = [f"codex_home: {result['codex_home']}"]
+    for index, record in enumerate(result["records"], start=1):
         flags = []
         if record["archived"]:
             flags.append("archived")
@@ -457,17 +473,35 @@ def format_table(result: dict[str, Any]) -> str:
             flags.append("subagent")
         if not flags:
             flags.append("active-main")
-        lines.append(
-            " | ".join(
-                [
-                    record["thread_id"],
-                    str(record["confidence"]),
-                    ",".join(flags),
-                    record["updated_at"] or "",
-                    record["resume_command"],
-                ]
-            )
+        if index > 1:
+            lines.append("")
+        lines.extend(
+            [
+                f"thread_id: {record['thread_id']}",
+                f"confidence: {record['confidence']}",
+                f"flags: {', '.join(flags)}",
+                f"cwd: {record['cwd'] or ''}",
+                f"started_at: {record['started_at'] or ''}",
+                f"updated_at: {record['updated_at'] or ''}",
+                f"matching reasons: {', '.join(record['matching_reasons']) or 'none'}",
+                "source paths:",
+            ]
         )
+        lines.extend(f"- {source_path}" for source_path in record["source_paths"])
+        lines.extend(
+            [
+                f"resume: {record['resume_command']}",
+                f"fork: {record['fork_command']}",
+                f"deep link: {record['deep_link']}",
+            ]
+        )
+        if record.get("first_user_prompt") is not None:
+            lines.append(f"first prompt: {record['first_user_prompt']}")
+        if record.get("last_user_prompt") is not None:
+            lines.append(f"last prompt: {record['last_user_prompt']}")
+        if record["warnings"]:
+            lines.append("record warnings:")
+            lines.extend(f"- {warning}" for warning in record["warnings"])
     if result["warnings"]:
         lines.append("")
         lines.append("warnings:")
@@ -484,7 +518,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cwd")
     parser.add_argument("--since")
     parser.add_argument("--until")
-    parser.add_argument("--timezone", default="UTC")
+    parser.add_argument("--timezone", default=None)
     parser.add_argument("--query")
     parser.add_argument("--include-archived", action="store_true")
     parser.add_argument("--include-subagents", action="store_true")
