@@ -20,7 +20,7 @@ It should help Codex:
 - Produce CLI recovery commands and deep links.
 - Optionally create, title, and pin a Desktop-visible helper thread when the current environment exposes the required thread tools and the user asks for that action.
 
-It must not promise to import JSONL history into the Desktop sidebar or to repair `state_5.sqlite`.
+It must not promise to import JSONL history into the Desktop sidebar or to repair SQLite-backed state, including local files that may be named `state_5.sqlite`.
 
 ## Sources And Product Boundaries
 
@@ -30,6 +30,7 @@ Official Codex behavior used by the design:
 - Session transcripts live under `$CODEX_HOME/sessions`; archived sessions live under `$CODEX_HOME/archived_sessions`.
 - `codex resume`, `codex fork`, `codex archive`, and `codex unarchive` are stable CLI commands.
 - Codex Desktop supports thread search and `codex://threads/<thread_id>` links, but Desktop UI presence is not the same thing as a callable thread-management tool surface.
+- `CODEX_SQLITE_HOME` controls where SQLite-backed state is stored. Specific SQLite filenames are not treated as stable public API by this design.
 
 Reference docs:
 
@@ -179,7 +180,7 @@ Default behavior:
 
 - Read local Codex state only.
 - Do not edit real `$CODEX_HOME`.
-- Do not edit `state_5.sqlite`.
+- Do not edit SQLite-backed state, including any local `state_5.sqlite` file if present.
 - Do not copy rollout JSONL files into live Codex state.
 - Do not unarchive sessions.
 - Do not create, rename, pin, or archive Desktop threads.
@@ -194,7 +195,7 @@ Allowed only after explicit user request:
 
 Out of scope:
 
-- SQLite repair.
+- SQLite-backed state repair.
 - Direct state migration between accounts.
 - Direct provider metadata rewriting.
 - Automatic import of arbitrary JSONL files into Desktop.
@@ -209,7 +210,7 @@ Test strategy:
 2. Each test copies that fixture tree into a temporary directory.
 3. Tests invoke the scanner with `--codex-home <tmp_copy>`.
 4. Tests assert that the scanner refuses to run write-like test helpers against `Path.home() / ".codex"` or the real `CODEX_HOME`.
-5. Tests do not read or write real `sessions/`, `archived_sessions/`, or `state_5.sqlite`.
+5. Tests do not read or write real `sessions/`, `archived_sessions/`, or SQLite-backed state files, including any local `state_5.sqlite` file if present.
 
 Required test cases:
 
