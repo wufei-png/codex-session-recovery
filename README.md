@@ -12,7 +12,7 @@ Reusable Codex skill for finding local Codex session history and producing safe,
 ## Verify
 
 ```bash
-python -m unittest tests.test_scan_codex_sessions -v
+PYTHONDONTWRITEBYTECODE=1 python -m unittest tests.test_scan_codex_sessions -v
 python /Users/wufei2/.codex/skills/.system/skill-creator/scripts/quick_validate.py codex-session-recovery
 ```
 
