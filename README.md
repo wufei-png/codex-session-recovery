@@ -2,12 +2,13 @@
 
 Reusable Codex skill for finding local Codex session history and producing safe, CLI-first recovery instructions.
 
-Lost a Codex thread after an account switch, provider change, or sidebar cleanup? `codex-session-recovery` finds the right local session fast and turns it into a clear next step: resume it, fork it, or open the deep link without mutating your live Codex state.
+Lost a Codex thread after an account switch, provider change, or sidebar cleanup? `codex-session-recovery` finds the right local session fast and turns it into a clear next step: resume it, fork it, or open the deep link without mutating your live Codex state. Unlike recovery skills that stop at CLI output, it also considers the enhanced path of restoring a recovered session into the Codex Desktop sidebar when the required thread tools are available.
 
 ## Why It Helps
 
 - Find likely sessions by project path, time window, or prompt text.
 - Get practical recovery output such as `codex resume`, `codex fork`, and `codex://threads/...`.
+- Optionally restore a recovered result back into the Codex Desktop left sidebar as a visible, titleable, pinnable thread.
 - Stay safe by default with read-only scanning and no live state rewrites.
 
 ## Install
