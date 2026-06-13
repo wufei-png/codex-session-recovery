@@ -132,11 +132,22 @@ Desktop actions are capability-gated. A Codex Desktop context is not enough.
 
 Before any Desktop-visible action, call `tool_search` in the current conversation for the exact thread tools needed:
 
-- `fork_thread`
-- `set_thread_title`
-- `set_thread_pinned`
-- `list_threads`
-- `read_thread`
+- `fork_thread`: create a Desktop-visible fork from the recovered thread id.
+- `set_thread_title`: give the visible fork a clear recovery title.
+- `set_thread_pinned`: pin the visible fork in the sidebar.
+- `list_threads` or `read_thread`: verify the visible fork exists.
+
+Desktop-visible recovery steps:
+
+1. Select one candidate thread id from scanner output and keep the original id in the response.
+2. Prepare a dry-run with the target id, proposed title, and pin action.
+3. If the user already authorized Desktop visibility, call `fork_thread` for the selected thread id; otherwise show the dry-run first and wait.
+4. Call `set_thread_title` on the new visible thread.
+5. Call `set_thread_pinned` with pin enabled on the new visible thread.
+6. Verify with `list_threads` or `read_thread`.
+7. Report the visible thread id, original recovered thread id, and CLI fallbacks.
+
+If any required tool is missing or `fork_thread` cannot access the recovered id, do not edit local state or SQLite-backed state. Fall back to CLI commands and deep links. Create a fresh pointer thread only when the user explicitly asks for that and `create_thread` is available in the current conversation.
 
 Decision table:
 
@@ -149,7 +160,7 @@ Decision table:
 When creating Desktop-visible helper threads, make titles explicit, for example:
 
 ```text
-恢复 keepsake: boardView / live geometry
+Recovered Codex session: upload flow investigation
 ```
 
 Report that the helper thread is a visible fork or pointer, not a byte-for-byte import of JSONL history into Desktop state.

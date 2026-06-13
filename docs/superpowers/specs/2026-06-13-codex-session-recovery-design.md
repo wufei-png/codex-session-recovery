@@ -101,6 +101,17 @@ Verification also needs:
 - `list_threads`
 - `read_thread`
 
+Desktop-visible recovery procedure:
+
+1. Select one recovered candidate thread id from scanner output.
+2. Present a dry-run containing the target id, proposed title, fork action, and pin action unless the user already gave clear authorization.
+3. Use `fork_thread` to create a visible fork from the recovered id.
+4. Use `set_thread_title` and `set_thread_pinned` on the visible fork.
+5. Verify the result with `list_threads` or `read_thread`.
+6. Report both the visible fork id and the original recovered id, plus CLI fallback commands.
+
+If the tools are missing or the fork operation cannot access the recovered id, the fallback remains CLI-first recovery. Do not edit local state or SQLite-backed state. Create a fresh pointer thread only when the user explicitly asks for that and `create_thread` is available in the current conversation.
+
 Decision table:
 
 | Runtime capability | User request | Behavior |
