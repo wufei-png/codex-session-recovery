@@ -1,15 +1,24 @@
 # codex-session-recovery
 
+![codex-session-recovery cover](docs/assets/codex-session-recovery-cover.png)
+
 Reusable Codex skill for finding local Codex session history and producing safe, CLI-first recovery instructions.
 
-Lost a Codex thread after an account switch, provider change, or sidebar cleanup? `codex-session-recovery` finds the right local session fast and turns it into a clear next step: resume it, fork it, or open the deep link without mutating your live Codex state. Unlike recovery skills that stop at CLI output, it also considers the enhanced path of restoring a recovered session into the Codex Desktop sidebar when the required thread tools are available.
+## Recover Lost Codex Sessions Faster
 
-## Why It Helps
+When a Codex thread disappears after an account switch, provider change, or sidebar cleanup, `codex-session-recovery` helps you recover the session without touching live Codex state. It is especially useful when you switch accounts with tools such as `cc-switch` and older sessions stop showing up where you expect them.
+
+## What It Helps You Do
 
 - Find likely sessions by project path, time window, or prompt text.
-- Get practical recovery output such as `codex resume`, `codex fork`, and `codex://threads/...`.
-- Optionally restore a recovered result back into the Codex Desktop left sidebar as a visible, titleable, pinnable thread.
-- Stay safe by default with read-only scanning and no live state rewrites.
+- Turn recovery into concrete next steps such as `codex resume`, `codex fork`, and `codex://threads/...`.
+- Keep the workflow safe with read-only scanning and no live state rewrites.
+
+## Why This Skill Stands Out
+
+- Many recovery skills stop at CLI output. This one also considers the Desktop path.
+- When the required thread tools are available, it can help restore a recovered result into the Codex Desktop left sidebar as a visible, titleable, pinnable thread.
+- It is designed for practical recovery after real workflow disruptions, including account switching with `cc-switch`.
 
 ## Install
 
