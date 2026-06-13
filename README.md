@@ -2,6 +2,23 @@
 
 Reusable Codex skill for finding local Codex session history and producing safe, CLI-first recovery instructions.
 
+## Install
+
+One-line install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wufei-png/codex-session-recovery/main/install.sh | bash
+```
+
+This installs the skill into `${CODEX_HOME:-$HOME/.codex}/skills/codex-session-recovery`.
+
+To install elsewhere:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wufei-png/codex-session-recovery/main/install.sh \
+  | CODEX_SESSION_RECOVERY_SKILL_DIR=/path/to/skills/codex-session-recovery bash
+```
+
 ## Layout
 
 - `codex-session-recovery/` is the installable skill folder.
@@ -13,6 +30,7 @@ Reusable Codex skill for finding local Codex session history and producing safe,
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -m unittest tests.test_scan_codex_sessions -v
+PYTHONDONTWRITEBYTECODE=1 python -m unittest tests.test_install_script -v
 python /Users/wufei2/.codex/skills/.system/skill-creator/scripts/quick_validate.py codex-session-recovery
 ```
 
